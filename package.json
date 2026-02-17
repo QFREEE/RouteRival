@@ -4,6 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:web": "next dev",
+    "dev:api": "tsx backend/simple-server.ts",
+    "dev:full": "BACKEND_PORT=${BACKEND_PORT:-4001} npm run dev:api & BACKEND_ORIGIN=http://localhost:${BACKEND_PORT:-4001} npm run dev:web",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
