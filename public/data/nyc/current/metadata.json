@@ -1,0 +1,24 @@
+{
+  "snapshotDate": "2026-02-17",
+  "generatedAt": "2026-02-17T03:16:22.455Z",
+  "counts": {
+    "subwayStations": 496,
+    "busStops": 14465,
+    "bikeStations": 2354,
+    "subwayLines": 28,
+    "busLines": 345,
+    "nodeSeed": 17315
+  },
+  "sources": {
+    "subway": "gtfs_subway.zip",
+    "bus": [
+      "gtfs_b.zip",
+      "gtfs_bx.zip",
+      "gtfs_m.zip",
+      "gtfs_q.zip",
+      "gtfs_si.zip",
+      "gtfs_busco.zip"
+    ],
+    "bike": "citibike_station_information.json"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "generatedAt": "2026-02-17T04:02:13.120Z",
+  "source": "https://a.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}.png",
+  "minZoom": 10,
+  "maxZoom": 14,
+  "requested": 1001,
+  "downloaded": 1001,
+  "bounds": {
+    "minLat": 40.4774,
+    "maxLat": 40.9176,
+    "minLng": -74.2591,
+    "maxLng": -73.7004
+  }
+}

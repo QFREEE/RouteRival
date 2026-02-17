@@ -1,0 +1,62 @@
+{
+  "snapshotDate": "2026-02-17",
+  "generatedAt": "2026-02-17T03:16:20.968Z",
+  "downloads": [
+    {
+      "key": "subway",
+      "url": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip",
+      "fileName": "gtfs_subway.zip",
+      "bytes": 5561902,
+      "sha256": "25849da08cf08a8b4e2d3877be7b5364e60f417e15a66e75858636d3478def71"
+    },
+    {
+      "key": "bus-brooklyn",
+      "url": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_b.zip",
+      "fileName": "gtfs_b.zip",
+      "bytes": 19844560,
+      "sha256": "39e384522a99bcabb6fabeb8b17e8ab1cf4dbaebf383acc7516b2cc498a62d7a"
+    },
+    {
+      "key": "bus-bronx",
+      "url": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_bx.zip",
+      "fileName": "gtfs_bx.zip",
+      "bytes": 9697823,
+      "sha256": "8fa8c4d7b5bc0becaa89110fb0b363ec08b6c0489820a554156ee859d71e771a"
+    },
+    {
+      "key": "bus-manhattan",
+      "url": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_m.zip",
+      "fileName": "gtfs_m.zip",
+      "bytes": 9593106,
+      "sha256": "dc0f3b4ddd44158b000c07764a61ed6c123a0512b25a55adf90499f625838280"
+    },
+    {
+      "key": "bus-queens",
+      "url": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_q.zip",
+      "fileName": "gtfs_q.zip",
+      "bytes": 6805905,
+      "sha256": "b34a46d146c0c25d8516f14b3dfc4bd6173fd955f8896f29cc9cccbdc28d23d6"
+    },
+    {
+      "key": "bus-staten-island",
+      "url": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_si.zip",
+      "fileName": "gtfs_si.zip",
+      "bytes": 7866322,
+      "sha256": "2d541becdf2b0af7737e6591d356389e09c00599e3315274d6eeedb2c265fb03"
+    },
+    {
+      "key": "bus-company",
+      "url": "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_busco.zip",
+      "fileName": "gtfs_busco.zip",
+      "bytes": 9858861,
+      "sha256": "0b33f7756ba265c17e1daac8b72c2b92b49e4beb02cdd80f10f751ca1f1c1a11"
+    },
+    {
+      "key": "citibike-station-information",
+      "url": "https://gbfs.citibikenyc.com/gbfs/en/station_information.json",
+      "fileName": "citibike_station_information.json",
+      "bytes": 1276640,
+      "sha256": "4506b9fa2a04c628c084a6948cf6f3959fd2e814abb94604e6eeba830836f6da"
+    }
+  ]
+}

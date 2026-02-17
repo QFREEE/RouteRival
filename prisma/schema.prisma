@@ -1,0 +1,76 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum NodeType {
+  BIKE_DOCK
+  SUBWAY_STATION
+  BUS_STOP
+  FERRY_TERMINAL
+}
+
+enum Mode {
+  WALK
+  BIKE_SHARE
+  SUBWAY
+  BUS
+  FERRY
+}
+
+model City {
+  id         String      @id @default(cuid())
+  name       String      @unique
+  nodes      Node[]
+  challenges Challenge[]
+}
+
+model Node {
+  id     String   @id @default(cuid())
+  cityId String
+  city   City     @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  type   NodeType
+  name   String
+  lat    Float
+  lng    Float
+
+  @@index([cityId, type])
+  @@index([cityId, name])
+}
+
+model Challenge {
+  id        String @id @default(cuid())
+  cityId    String
+  city      City   @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  dateKey   String
+  originLat Float
+  originLng Float
+  destLat   Float
+  destLng   Float
+  title     String
+
+  submissions Submission[]
+
+  @@unique([cityId, dateKey])
+  @@index([dateKey])
+}
+
+model Submission {
+  id               String    @id @default(cuid())
+  challengeId      String
+  challenge        Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  playerName       String
+  segments         Json
+  totalTimeMinutes Float
+  createdAt        DateTime  @default(now())
+
+  @@index([challengeId, totalTimeMinutes, createdAt])
+  @@index([challengeId, createdAt])
+}
