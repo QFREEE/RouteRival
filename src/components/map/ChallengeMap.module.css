@@ -1,0 +1,46 @@
+.chooser {
+  min-width: 220px;
+}
+
+.chooserTitle {
+  color: #0f172a;
+  font-size: 0.86rem;
+}
+
+.chooserList {
+  margin-top: 0.4rem;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.chooserOption {
+  text-align: left;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 0.4rem 0.48rem;
+  background: #f8fafc;
+  color: #0f172a;
+  cursor: pointer;
+}
+
+.chooserOptionDisabled {
+  background: #f1f5f9;
+  color: #64748b;
+  cursor: not-allowed;
+}
+
+.chooserName {
+  font-weight: 600;
+  font-size: 0.82rem;
+}
+
+.chooserType {
+  font-size: 0.72rem;
+  margin-top: 0.08rem;
+}
+
+.chooserReason {
+  font-size: 0.7rem;
+  margin-top: 0.16rem;
+  color: #7f1d1d;
+}

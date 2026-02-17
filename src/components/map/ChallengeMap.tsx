@@ -1,9 +1,11 @@
 "use client";
 
-import type { ChallengeDTO, Coordinate, Mode, NodeDTO, Segment } from "@/types/game";
+import type { ChallengeDTO, Coordinate, NodeDTO, Segment } from "@/types/game";
+import { haversineMeters } from "@/lib/game/haversine";
 import "leaflet/dist/leaflet.css";
-import { CircleMarker, GeoJSON, MapContainer, Polygon, Polyline, TileLayer, Tooltip, useMap, useMapEvents } from "react-leaflet";
-import { useEffect, useMemo, useState } from "react";
+import { Circle, CircleMarker, GeoJSON, MapContainer, Polygon, Polyline, Popup, TileLayer, Tooltip, useMap, useMapEvents } from "react-leaflet";
+import { useEffect, useMemo, useRef, useState } from "react";
+import styles from "./ChallengeMap.module.css";
 
 type BoundsDTO = {
   minLat: number;
@@ -16,12 +18,18 @@ type Props = {
   challenge: ChallengeDTO;
   nodes: NodeDTO[];
   segments: Segment[];
-  selectedMode: Mode;
+  contextMode: "WALK" | "SUBWAY";
+  walkNodeFilter: Record<NodeDTO["type"], boolean>;
+  activeSubwayLine?: string | null;
   currentPosition: Coordinate;
   currentNodeId?: string;
-  onNodeClick: (node: NodeDTO) => void;
+  onNodeClick: (node: NodeDTO, nextSubwayLine?: string) => void;
   onDestinationClick: () => void;
+  walkRadiusMeters: number;
+  bikeRadiusMeters: number;
+  onInteractionMessage?: (message: string | null) => void;
   onViewportChange: (bounds: BoundsDTO) => void;
+  onBaseTileReady?: () => void;
 };
 
 type TransitLinesGeoJSON = {
@@ -53,11 +61,21 @@ type BoundaryFeatureCollection = {
   }>;
 };
 
-const MODE_TO_NODE_TYPE: Record<Exclude<Mode, "WALK">, NodeDTO["type"]> = {
-  BIKE_SHARE: "BIKE_DOCK",
-  SUBWAY: "SUBWAY_STATION",
-  BUS: "BUS_STOP",
-  FERRY: "FERRY_TERMINAL",
+type SubwayRouteFeature = TransitLinesGeoJSON["features"][number] & {
+  properties?: {
+    routeShortName?: string;
+  };
+};
+
+type NodeAction = {
+  selectable: boolean;
+  reason?: string;
+};
+
+type ChooserState = {
+  lat: number;
+  lng: number;
+  options: Array<{ node: NodeDTO; action: NodeAction }>;
 };
 
 const NODE_COLORS: Record<NodeDTO["type"], string> = {
@@ -106,19 +124,6 @@ function extractOuterRings(boundary: BoundaryFeatureCollection): [number, number
   }
 
   return rings;
-}
-
-function isNodeClickable(node: NodeDTO, selectedMode: Mode, currentNodeId?: string): boolean {
-  if (selectedMode === "WALK") {
-    return true;
-  }
-
-  const requiredType = MODE_TO_NODE_TYPE[selectedMode];
-  if (node.type !== requiredType) {
-    return false;
-  }
-
-  return currentNodeId !== node.id;
 }
 
 function FitBounds({ bounds }: { bounds: [[number, number], [number, number]] }) {
@@ -195,20 +200,45 @@ function subwayStrokeColor(routeShortName: string): string {
   return byLetter[key[0]] ?? "#fb923c";
 }
 
+function lineCoordinateDistanceMeters(node: NodeDTO, coordinates: number[][]): number {
+  let best = Number.POSITIVE_INFINITY;
+  for (const point of coordinates) {
+    if (point.length < 2) {
+      continue;
+    }
+
+    const [lng, lat] = point;
+    const distance = haversineMeters(node.lat, node.lng, lat, lng);
+    if (distance < best) {
+      best = distance;
+    }
+  }
+
+  return best;
+}
+
 export function ChallengeMap({
   challenge,
   nodes,
   segments,
-  selectedMode,
+  contextMode,
+  walkNodeFilter,
+  activeSubwayLine,
   currentPosition,
   currentNodeId,
   onNodeClick,
   onDestinationClick,
+  walkRadiusMeters,
+  bikeRadiusMeters,
+  onInteractionMessage,
   onViewportChange,
+  onBaseTileReady,
 }: Props) {
   const [subwayLines, setSubwayLines] = useState<TransitLinesGeoJSON | null>(null);
-  const [busLines, setBusLines] = useState<TransitLinesGeoJSON | null>(null);
   const [cityRings, setCityRings] = useState<[number, number][][]>([]);
+  const [chooser, setChooser] = useState<ChooserState | null>(null);
+  const [previewNodeId, setPreviewNodeId] = useState<string | null>(null);
+  const baseTileReadyRef = useRef(false);
   const center: [number, number] = [(challenge.originLat + challenge.destLat) / 2, (challenge.originLng + challenge.destLng) / 2];
 
   useEffect(() => {
@@ -228,11 +258,12 @@ export function ChallengeMap({
     };
   }, []);
 
+  const previewNode = useMemo(() => nodes.find((node) => node.id === previewNodeId) ?? null, [nodes, previewNodeId]);
+  const previewSubwayNodeId = contextMode === "WALK" && previewNode?.type === "SUBWAY_STATION" ? previewNode.id : null;
+
   useEffect(() => {
-    if (selectedMode !== "SUBWAY") {
-      return;
-    }
-    if (subwayLines) {
+    const needsSubwayLines = contextMode === "SUBWAY" || Boolean(previewSubwayNodeId);
+    if (!needsSubwayLines || subwayLines) {
       return;
     }
 
@@ -249,33 +280,7 @@ export function ChallengeMap({
     return () => {
       cancelled = true;
     };
-  }, [selectedMode, subwayLines]);
-
-  useEffect(() => {
-    if (selectedMode !== "BUS") {
-      return;
-    }
-    if (busLines) {
-      return;
-    }
-
-    let cancelled = false;
-    fetch("/data/nyc/current/bus_lines.geojson")
-      .then((response) => (response.ok ? response.json() : null))
-      .then((data) => {
-        if (!cancelled && data) {
-          setBusLines(data as TransitLinesGeoJSON);
-        }
-      })
-      .catch(() => undefined);
-
-    return () => {
-      cancelled = true;
-    };
-  }, [busLines, selectedMode]);
-
-  const showSubwayLayer = Boolean(subwayLines) && selectedMode === "SUBWAY";
-  const showBusLayer = Boolean(busLines) && selectedMode === "BUS";
+  }, [contextMode, previewSubwayNodeId, subwayLines]);
 
   const initialBounds = useMemo<[[number, number], [number, number]]>(() => {
     const minLat = Math.max(Math.min(challenge.originLat, challenge.destLat) - 0.04, NYC_BOUNDS[0][0]);
@@ -301,6 +306,198 @@ export function ChallengeMap({
     return points;
   }, [segments]);
 
+  const subwayRoutesByStationId = useMemo(() => {
+    const byStation = new Map<string, Set<string>>();
+    if (!subwayLines) {
+      return byStation;
+    }
+
+    const stations = nodes.filter((node) => node.type === "SUBWAY_STATION");
+    const features = subwayLines.features as SubwayRouteFeature[];
+
+    for (const station of stations) {
+      const routeSet = new Set<string>();
+      for (const feature of features) {
+        const routeShortName = String(feature.properties?.routeShortName ?? "").trim().toUpperCase();
+        if (!routeShortName || feature.geometry.type !== "LineString") {
+          continue;
+        }
+
+        const distanceMeters = lineCoordinateDistanceMeters(station, feature.geometry.coordinates);
+        if (distanceMeters <= 220) {
+          routeSet.add(routeShortName);
+        }
+      }
+
+      byStation.set(station.id, routeSet);
+    }
+
+    return byStation;
+  }, [nodes, subwayLines]);
+
+  const focusedSubwayNodeId = contextMode === "SUBWAY" ? (currentNodeId ?? null) : previewSubwayNodeId;
+
+  const focusedSubwayRoutes = useMemo(() => {
+    if (contextMode === "SUBWAY" && activeSubwayLine) {
+      return new Set<string>([activeSubwayLine]);
+    }
+
+    if (!focusedSubwayNodeId) {
+      return new Set<string>();
+    }
+
+    return subwayRoutesByStationId.get(focusedSubwayNodeId) ?? new Set<string>();
+  }, [activeSubwayLine, contextMode, focusedSubwayNodeId, subwayRoutesByStationId]);
+
+  const reachableSubwayStationIds = useMemo(() => {
+    if (!focusedSubwayNodeId || focusedSubwayRoutes.size === 0) {
+      return new Set<string>();
+    }
+
+    const reachable = new Set<string>();
+    for (const [stationId, routes] of subwayRoutesByStationId.entries()) {
+      if (stationId === focusedSubwayNodeId) {
+        continue;
+      }
+
+      for (const route of routes) {
+        if (focusedSubwayRoutes.has(route)) {
+          reachable.add(stationId);
+          break;
+        }
+      }
+    }
+
+    return reachable;
+  }, [focusedSubwayNodeId, focusedSubwayRoutes, subwayRoutesByStationId]);
+
+  const walkVisibleNodes = useMemo(
+    () =>
+      nodes.filter((node) => {
+        if (!walkNodeFilter[node.type]) {
+          return false;
+        }
+        const distanceMeters = haversineMeters(currentPosition.lat, currentPosition.lng, node.lat, node.lng);
+        return distanceMeters <= walkRadiusMeters;
+      }),
+    [currentPosition.lat, currentPosition.lng, nodes, walkNodeFilter, walkRadiusMeters],
+  );
+
+  const subwayVisibleNodes = useMemo(() => {
+    if (!currentNodeId) {
+      return [] as NodeDTO[];
+    }
+
+    return nodes.filter(
+      (node) => node.type === "SUBWAY_STATION" && (node.id === currentNodeId || reachableSubwayStationIds.has(node.id)),
+    );
+  }, [currentNodeId, nodes, reachableSubwayStationIds]);
+
+  const visibleNodes = contextMode === "SUBWAY" ? subwayVisibleNodes : walkVisibleNodes;
+
+  const previewConnectedStations = useMemo(() => {
+    if (contextMode !== "WALK" || !previewSubwayNodeId) {
+      return [] as NodeDTO[];
+    }
+
+    return nodes.filter(
+      (node) => node.type === "SUBWAY_STATION" && (node.id === previewSubwayNodeId || reachableSubwayStationIds.has(node.id)),
+    );
+  }, [contextMode, nodes, previewSubwayNodeId, reachableSubwayStationIds]);
+
+  const showSubwayLayer = Boolean(subwayLines) && focusedSubwayRoutes.size > 0;
+
+  const focusedSubwayLines = useMemo<TransitLinesGeoJSON | null>(() => {
+    if (!subwayLines || focusedSubwayRoutes.size === 0) {
+      return null;
+    }
+
+    return {
+      ...subwayLines,
+      features: subwayLines.features.filter((feature) => {
+        const routeShortName = String(feature.properties?.routeShortName ?? "").trim().toUpperCase();
+        return focusedSubwayRoutes.has(routeShortName);
+      }),
+    };
+  }, [focusedSubwayRoutes, subwayLines]);
+
+  function nodeAction(node: NodeDTO): NodeAction {
+    const walkDistanceMeters = haversineMeters(currentPosition.lat, currentPosition.lng, node.lat, node.lng);
+    const canWalkToNode = walkDistanceMeters <= walkRadiusMeters;
+
+    if (contextMode === "WALK") {
+      if (!canWalkToNode) {
+        return { selectable: false, reason: "Outside 15-minute walk range." };
+      }
+      return { selectable: true };
+    }
+
+    if (node.type !== "SUBWAY_STATION") {
+      return { selectable: false, reason: "Subway mode only allows connected subway stations." };
+    }
+
+    if (!currentNodeId) {
+      return { selectable: false, reason: "Current position is not a subway station." };
+    }
+
+    if (node.id === currentNodeId) {
+      return { selectable: false, reason: "Pick a different station." };
+    }
+
+    if (!reachableSubwayStationIds.has(node.id)) {
+      return { selectable: false, reason: "Not connected to current subway lines." };
+    }
+
+    return { selectable: true };
+  }
+
+  function handleNodeTap(node: NodeDTO) {
+    const overlapCandidates = visibleNodes.filter(
+      (candidate) => haversineMeters(node.lat, node.lng, candidate.lat, candidate.lng) <= 45,
+    );
+
+    const sorted = overlapCandidates
+      .map((candidate) => ({
+        node: candidate,
+        action: nodeAction(candidate),
+      }))
+      .sort((a, b) => {
+        const aDistance = haversineMeters(node.lat, node.lng, a.node.lat, a.node.lng);
+        const bDistance = haversineMeters(node.lat, node.lng, b.node.lat, b.node.lng);
+        if (aDistance !== bDistance) {
+          return aDistance - bDistance;
+        }
+
+        return a.node.name.localeCompare(b.node.name);
+      });
+
+    if (sorted.length > 1) {
+      setChooser({ lat: node.lat, lng: node.lng, options: sorted });
+      return;
+    }
+
+    const action = sorted[0]?.action ?? nodeAction(node);
+    if (!action.selectable) {
+      onInteractionMessage?.(action.reason ?? "This node is not selectable right now.");
+      return;
+    }
+
+    let nextSubwayLine: string | undefined;
+    if (contextMode === "SUBWAY" && currentNodeId && node.type === "SUBWAY_STATION") {
+      const fromRoutes = subwayRoutesByStationId.get(currentNodeId) ?? new Set<string>();
+      const toRoutes = subwayRoutesByStationId.get(node.id) ?? new Set<string>();
+      const sharedRoutes = [...fromRoutes].filter((route) => toRoutes.has(route)).sort();
+      if (sharedRoutes.length > 0) {
+        const preferred = activeSubwayLine && sharedRoutes.includes(activeSubwayLine) ? activeSubwayLine : sharedRoutes[0];
+        nextSubwayLine = preferred;
+      }
+    }
+
+    onInteractionMessage?.(null);
+    onNodeClick(node, nextSubwayLine);
+    setPreviewNodeId(null);
+  }
+
   return (
     <MapContainer center={center} zoom={11} minZoom={10} maxZoom={14} maxBounds={NYC_BOUNDS} maxBoundsViscosity={1} scrollWheelZoom className="challenge-map">
       <FitBounds bounds={initialBounds} />
@@ -311,6 +508,14 @@ export function ChallengeMap({
         url={PRIMARY_TILE_URL}
         bounds={NYC_BOUNDS}
         noWrap
+        eventHandlers={{
+          tileload: () => {
+            if (!baseTileReadyRef.current) {
+              baseTileReadyRef.current = true;
+              onBaseTileReady?.();
+            }
+          },
+        }}
       />
 
       {cityRings.length > 0 ? (
@@ -340,32 +545,35 @@ export function ChallengeMap({
         </>
       ) : null}
 
-      {showBusLayer && busLines ? (
+      {showSubwayLayer && focusedSubwayLines ? (
         <>
-          <GeoJSON data={busLines} style={{ color: "#22d3ee", weight: 4, opacity: 0.08 }} />
-          <GeoJSON data={busLines} style={{ color: "#38bdf8", weight: 1.8, opacity: 0.42, dashArray: "6 6" }} />
+          <GeoJSON
+            data={focusedSubwayLines}
+            style={(feature) => ({
+              color: subwayStrokeColor(String(feature?.properties?.routeShortName ?? "")),
+              weight: 4,
+              opacity: 0.92,
+            })}
+          />
         </>
       ) : null}
 
-      {showSubwayLayer && subwayLines ? (
-        <>
-          <GeoJSON
-            data={subwayLines}
-            style={(feature) => ({
-              color: subwayStrokeColor(String(feature?.properties?.routeShortName ?? "")),
-              weight: 6,
-              opacity: 0.12,
-            })}
-          />
-          <GeoJSON
-            data={subwayLines}
-            style={(feature) => ({
-              color: subwayStrokeColor(String(feature?.properties?.routeShortName ?? "")),
-              weight: 2.6,
-              opacity: 0.9,
-            })}
-          />
-        </>
+      {contextMode === "WALK" ? (
+        <Circle
+          center={[currentPosition.lat, currentPosition.lng]}
+          radius={walkRadiusMeters}
+          pathOptions={{ color: "#f59e0b", fillColor: "#f59e0b", fillOpacity: 0.1, weight: 2, dashArray: "8 8" }}
+          interactive={false}
+        />
+      ) : null}
+
+      {contextMode === "WALK" && previewNode?.type === "BIKE_DOCK" ? (
+        <Circle
+          center={[previewNode.lat, previewNode.lng]}
+          radius={bikeRadiusMeters}
+          pathOptions={{ color: "#22d3ee", fillColor: "#22d3ee", fillOpacity: 0.1, weight: 2, dashArray: "8 8" }}
+          interactive={false}
+        />
       ) : null}
 
       <CircleMarker
@@ -389,11 +597,14 @@ export function ChallengeMap({
       <CircleMarker
         center={[challenge.destLat, challenge.destLng]}
         radius={9}
-        pathOptions={{ color: selectedMode === "WALK" ? "#f59e0b" : "#9ca3af" }}
+        pathOptions={{ color: contextMode === "WALK" ? "#f59e0b" : "#9ca3af" }}
         eventHandlers={{
           click: () => {
-            if (selectedMode === "WALK") {
+            if (contextMode === "WALK") {
+              onInteractionMessage?.(null);
               onDestinationClick();
+            } else {
+              onInteractionMessage?.("Destination can only be selected while in WALK mode.");
             }
           },
         }}
@@ -401,25 +612,62 @@ export function ChallengeMap({
         <Tooltip direction="top">B: Destination (walk only)</Tooltip>
       </CircleMarker>
 
-      {nodes.map((node) => {
-        const clickable = isNodeClickable(node, selectedMode, currentNodeId);
+      {contextMode === "WALK" && previewConnectedStations.map((node) => {
+        const isFocused = node.id === previewSubwayNodeId;
+
+        return (
+          <CircleMarker
+            key={`preview-${node.id}`}
+            center={[node.lat, node.lng]}
+            radius={isFocused ? 6.5 : 5.5}
+            pathOptions={{
+              color: "#fb923c",
+              fillOpacity: 0.22,
+              opacity: 0.5,
+              weight: isFocused ? 2 : 1,
+            }}
+            interactive={false}
+          />
+        );
+      })}
+
+      {visibleNodes.map((node) => {
+        const action = nodeAction(node);
+        const clickable = action.selectable;
         const active = node.id === currentNodeId;
+        const subwayReachable = reachableSubwayStationIds.has(node.id);
 
         return (
           <CircleMarker
             key={node.id}
             center={[node.lat, node.lng]}
-            radius={active ? 8 : 6}
+            radius={active ? 8 : subwayReachable ? 7 : 6}
             pathOptions={{
               color: NODE_COLORS[node.type],
-              fillOpacity: clickable ? 0.8 : 0.3,
-              opacity: clickable ? 1 : 0.4,
+              fillOpacity: clickable ? 0.85 : 0.3,
+              opacity: clickable ? 1 : 0.42,
+              weight: subwayReachable ? 2.2 : 1.5,
             }}
             eventHandlers={{
-              click: () => {
-                if (clickable) {
-                  onNodeClick(node);
+              mouseover: () => {
+                if (contextMode === "WALK") {
+                  setPreviewNodeId(node.id);
                 }
+              },
+              mouseout: () => {
+                if (contextMode === "WALK") {
+                  setPreviewNodeId((prev) => (prev === node.id ? null : prev));
+                }
+              },
+              click: () => {
+                if (clickable || chooser) {
+                  if (contextMode === "WALK") {
+                    setPreviewNodeId(node.id);
+                  }
+                  handleNodeTap(node);
+                  return;
+                }
+                onInteractionMessage?.(action.reason ?? "This node is not selectable right now.");
               },
             }}
           >
@@ -429,6 +677,47 @@ export function ChallengeMap({
           </CircleMarker>
         );
       })}
+
+      {chooser ? (
+        <Popup
+          position={[chooser.lat, chooser.lng]}
+          closeButton={false}
+          autoClose
+          closeOnEscapeKey
+          closeOnClick
+          eventHandlers={{
+            remove: () => setChooser(null),
+          }}
+        >
+          <div className={styles.chooser}>
+            <strong className={styles.chooserTitle}>Choose node</strong>
+            <div className={styles.chooserList}>
+              {chooser.options.map((option) => (
+                <button
+                  key={option.node.id}
+                  type="button"
+                  disabled={!option.action.selectable}
+                  className={option.action.selectable ? styles.chooserOption : `${styles.chooserOption} ${styles.chooserOptionDisabled}`}
+                  onClick={() => {
+                    if (!option.action.selectable) {
+                      onInteractionMessage?.(option.action.reason ?? "This node is not selectable right now.");
+                      return;
+                    }
+
+                    onInteractionMessage?.(null);
+                    onNodeClick(option.node);
+                    setChooser(null);
+                  }}
+                >
+                  <div className={styles.chooserName}>{option.node.name}</div>
+                  <div className={styles.chooserType}>{option.node.type}</div>
+                  {!option.action.selectable && option.action.reason ? <div className={styles.chooserReason}>{option.action.reason}</div> : null}
+                </button>
+              ))}
+            </div>
+          </div>
+        </Popup>
+      ) : null}
 
       {routePath.length > 1 ? <Polyline positions={routePath} pathOptions={{ color: "#111827", weight: 4, opacity: 0.84 }} /> : null}
     </MapContainer>

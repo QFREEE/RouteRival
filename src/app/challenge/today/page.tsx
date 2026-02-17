@@ -1,9 +1,10 @@
 "use client";
 
 import { haversineMeters } from "@/lib/game/haversine";
-import type { ChallengeDTO, LeaderboardEntry, Mode, NodeDTO, Segment } from "@/types/game";
+import { useChallengeMetrics } from "@/hooks/useChallengeMetrics";
+import type { ChallengeDTO, Coordinate, LeaderboardEntry, Mode, NodeDTO, Segment } from "@/types/game";
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import styles from "./today.module.css";
 
 const ChallengeMap = dynamic(
@@ -11,15 +12,14 @@ const ChallengeMap = dynamic(
   { ssr: false },
 );
 
-const MODES: Mode[] = ["WALK", "BIKE_SHARE", "SUBWAY", "BUS", "FERRY"];
-const WALK_NODE_VISIBILITY_RADIUS_METERS = 900;
-
-const MODE_TO_NODE_TYPE: Record<Exclude<Mode, "WALK">, NodeDTO["type"]> = {
-  BIKE_SHARE: "BIKE_DOCK",
-  SUBWAY: "SUBWAY_STATION",
-  BUS: "BUS_STOP",
-  FERRY: "FERRY_TERMINAL",
+const WALK_MINUTES = 15;
+const BIKE_MINUTES = 30;
+const MODE_SPEED_MPH: Record<"WALK" | "BIKE_SHARE", number> = {
+  WALK: 3,
+  BIKE_SHARE: 10,
 };
+
+type ActionContext = "WALK" | "SUBWAY";
 
 type SubmissionResult = {
   totalTimeMinutes: number;
@@ -35,15 +35,20 @@ type ViewportBounds = {
 
 type PanelTab = "plan" | "rules" | "results";
 
+const NODE_TYPE_LABELS: Record<NodeDTO["type"], string> = {
+  BIKE_DOCK: "Bike",
+  SUBWAY_STATION: "Subway",
+  BUS_STOP: "Bus",
+  FERRY_TERMINAL: "Ferry",
+};
+
 function modeLabel(mode: Mode): string {
   return mode.replace("_", " ");
 }
 
-function compactModeLabel(mode: Mode): string {
-  if (mode === "BIKE_SHARE") {
-    return "Bike";
-  }
-  return modeLabel(mode);
+function minutesToMeters(speedMph: number, minutes: number): number {
+  const miles = (speedMph * minutes) / 60;
+  return miles * 1609.34;
 }
 
 function formatPosition(currentNode: NodeDTO | null): string {
@@ -54,37 +59,78 @@ function formatPosition(currentNode: NodeDTO | null): string {
   return `${currentNode.name} (${currentNode.type})`;
 }
 
-function guidance(activeMode: Mode, modeDisabledReasons: Record<Mode, string | undefined>, canSubmit: boolean): string {
+function coordinateLabel(coordinate: Coordinate, challenge: ChallengeDTO, knownNodes: Record<string, NodeDTO>): string {
+  if (coordinate.nodeId) {
+    const node = knownNodes[coordinate.nodeId];
+    if (node) {
+      return `${node.name} (${node.type})`;
+    }
+  }
+
+  const originDistance = haversineMeters(coordinate.lat, coordinate.lng, challenge.originLat, challenge.originLng);
+  if (originDistance <= 5) {
+    return "Origin A";
+  }
+
+  const destinationDistance = haversineMeters(coordinate.lat, coordinate.lng, challenge.destLat, challenge.destLng);
+  if (destinationDistance <= 50) {
+    return "Destination B";
+  }
+
+  return `${coordinate.lat.toFixed(4)}, ${coordinate.lng.toFixed(4)}`;
+}
+
+function guidance(contextMode: ActionContext, canSubmit: boolean): string {
   if (canSubmit) {
     return "Route complete. Submit when ready.";
   }
 
-  if (activeMode === "WALK") {
-    return "Select a node or destination B to add a WALK segment.";
+  if (contextMode === "WALK") {
+    return `Walk range: ${WALK_MINUTES} min. Snap to a node or destination B.`;
   }
 
-  return modeDisabledReasons[activeMode] ?? `Tap a ${MODE_TO_NODE_TYPE[activeMode]} to continue ${modeLabel(activeMode)}.`;
+  return "Subway mode: only connected stations are clickable. Use Exit to Walk to leave subway mode.";
 }
 
 export default function TodayChallengePage() {
+  const metrics = useChallengeMetrics();
+  const {
+    startChallengeLoad,
+    finishChallengeLoad,
+    markViewportEvent,
+    markFirstBaseTile,
+  } = metrics;
   const [challenge, setChallenge] = useState<ChallengeDTO | null>(null);
   const [nodes, setNodes] = useState<NodeDTO[]>([]);
   const [segments, setSegments] = useState<Segment[]>([]);
-  const [selectedMode, setSelectedMode] = useState<Mode>("WALK");
   const [playerName, setPlayerName] = useState("");
   const [result, setResult] = useState<SubmissionResult | null>(null);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<PanelTab>("plan");
-  const [viewportBounds, setViewportBounds] = useState<ViewportBounds | null>(null);
   const [panelExpanded, setPanelExpanded] = useState(true);
   const [knownNodes, setKnownNodes] = useState<Record<string, NodeDTO>>({});
+  const [interactionMessage, setInteractionMessage] = useState<string | null>(null);
+  const [forcedWalkAtNodeId, setForcedWalkAtNodeId] = useState<string | null>(null);
+  const [activeSubwayLine, setActiveSubwayLine] = useState<string | null>(null);
+  const [walkNodeFilter, setWalkNodeFilter] = useState<Record<NodeDTO["type"], boolean>>({
+    BIKE_DOCK: true,
+    SUBWAY_STATION: true,
+    BUS_STOP: true,
+    FERRY_TERMINAL: true,
+  });
+
+  const handleViewportChange = useCallback((bounds: ViewportBounds) => {
+    markViewportEvent();
+    void bounds;
+  }, [markViewportEvent]);
 
   useEffect(() => {
     async function loadToday() {
       setLoading(true);
       setError(null);
+      startChallengeLoad();
       const response = await fetch("/api/challenge/today");
       const data = await response.json();
       if (!response.ok) {
@@ -93,17 +139,21 @@ export default function TodayChallengePage() {
         return;
       }
 
+      const loadedNodes = (data.nodes ?? []) as NodeDTO[];
       setChallenge(data.challenge);
-      setNodes([]);
-      setKnownNodes({});
+      setNodes(loadedNodes);
+      setKnownNodes(Object.fromEntries(loadedNodes.map((node) => [node.id, node])));
+      setForcedWalkAtNodeId(null);
+      setActiveSubwayLine(null);
       setLoading(false);
+      finishChallengeLoad();
     }
 
     loadToday().catch(() => {
       setError("Unable to load today challenge.");
       setLoading(false);
     });
-  }, []);
+  }, [finishChallengeLoad, startChallengeLoad]);
 
   const currentPosition = useMemo(() => {
     if (!challenge) {
@@ -135,6 +185,37 @@ export default function TodayChallengePage() {
       .map((nodeId) => knownNodes[nodeId])
       .filter((node): node is NodeDTO => Boolean(node));
   }, [knownNodes, segments]);
+
+  const mapNodes = useMemo(() => {
+    const byId: Record<string, NodeDTO> = {};
+
+    for (const node of nodes) {
+      byId[node.id] = node;
+    }
+
+    for (const node of Object.values(knownNodes)) {
+      byId[node.id] = node;
+    }
+
+    return Object.values(byId);
+  }, [knownNodes, nodes]);
+
+  const walkRadiusMeters = useMemo(() => minutesToMeters(MODE_SPEED_MPH.WALK, WALK_MINUTES), []);
+  const bikeRadiusMeters = useMemo(() => minutesToMeters(MODE_SPEED_MPH.BIKE_SHARE, BIKE_MINUTES), []);
+
+  const contextMode: ActionContext = useMemo(() => {
+    if (!currentNode || currentNode.type !== "SUBWAY_STATION") {
+      return "WALK";
+    }
+
+    return forcedWalkAtNodeId === currentNode.id ? "WALK" : "SUBWAY";
+  }, [currentNode, forcedWalkAtNodeId]);
+
+  useEffect(() => {
+    if (contextMode !== "SUBWAY") {
+      setActiveSubwayLine(null);
+    }
+  }, [contextMode]);
 
   const destinationDistanceMeters = useMemo(() => {
     if (!challenge || !currentPosition) {
@@ -169,134 +250,81 @@ export default function TodayChallengePage() {
   const canSubmit =
     Boolean(playerName.trim()) && segments.length > 0 && Number.isFinite(destinationDistanceMeters) && destinationDistanceMeters <= 50;
 
-  const modeDisabledReasons = useMemo<Record<Mode, string | undefined>>(() => {
-    const reasons: Record<Mode, string | undefined> = {
-      WALK: undefined,
-      BIKE_SHARE: undefined,
-      SUBWAY: undefined,
-      BUS: undefined,
-      FERRY: undefined,
+  const walkReachableCounts = useMemo(() => {
+    const counts: Record<NodeDTO["type"], number> = {
+      BIKE_DOCK: 0,
+      SUBWAY_STATION: 0,
+      BUS_STOP: 0,
+      FERRY_TERMINAL: 0,
     };
 
-    if (segments.length === 0) {
-      reasons.BIKE_SHARE = "Start at origin with WALK.";
-      reasons.FERRY = "Start at origin with WALK.";
-      return reasons;
+    if (!currentPosition) {
+      return counts;
     }
 
-    const modeChecks: Array<Exclude<Mode, "WALK">> = ["BIKE_SHARE", "SUBWAY", "BUS", "FERRY"];
-    for (const mode of modeChecks) {
-      if (!currentNode) {
-        reasons[mode] = `Need ${MODE_TO_NODE_TYPE[mode]} for ${modeLabel(mode)}.`;
-        continue;
-      }
-
-      if (currentNode.type !== MODE_TO_NODE_TYPE[mode]) {
-        reasons[mode] = `${modeLabel(mode)} requires ${MODE_TO_NODE_TYPE[mode]}.`;
+    for (const node of mapNodes) {
+      const distanceMeters = haversineMeters(currentPosition.lat, currentPosition.lng, node.lat, node.lng);
+      if (distanceMeters <= walkRadiusMeters) {
+        counts[node.type] += 1;
       }
     }
 
-    return reasons;
-  }, [currentNode, segments.length]);
+    return counts;
+  }, [currentPosition, mapNodes, walkRadiusMeters]);
 
-  const activeMode: Mode = modeDisabledReasons[selectedMode] ? "WALK" : selectedMode;
-
-  const visibleNodes = useMemo(() => {
-    if (activeMode !== "WALK" || !currentPosition) {
-      return nodes;
-    }
-
-    return nodes.filter((node) =>
-      haversineMeters(currentPosition.lat, currentPosition.lng, node.lat, node.lng) <= WALK_NODE_VISIBILITY_RADIUS_METERS,
-    );
-  }, [activeMode, currentPosition, nodes]);
-
-  useEffect(() => {
-    if (!challenge || !viewportBounds) {
-      return;
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(async () => {
-      try {
-        const params = new URLSearchParams({
-          cityId: challenge.cityId,
-          mode: activeMode,
-          minLat: String(viewportBounds.minLat),
-          maxLat: String(viewportBounds.maxLat),
-          minLng: String(viewportBounds.minLng),
-          maxLng: String(viewportBounds.maxLng),
-        });
-
-        if (currentPosition?.nodeId) {
-          params.set("currentNodeId", currentPosition.nodeId);
-        }
-
-        const response = await fetch(`/api/challenge/nodes?${params.toString()}`, {
-          signal: controller.signal,
-        });
-        if (!response.ok) {
-          return;
-        }
-
-        const data = (await response.json()) as { nodes?: NodeDTO[] };
-        const fetchedNodes = data.nodes ?? [];
-        setNodes(fetchedNodes);
-        setKnownNodes((prev) => {
-          const next = { ...prev };
-          for (const node of fetchedNodes) {
-            next[node.id] = node;
-          }
-          return next;
-        });
-      } catch {
-      }
-    }, 180);
-
-    return () => {
-      clearTimeout(timeout);
-      controller.abort();
-    };
-  }, [activeMode, challenge, currentPosition?.nodeId, viewportBounds]);
-
-  function appendSegment(to: { lat: number; lng: number; nodeId?: string }) {
+  function appendSegment(to: { lat: number; lng: number; nodeId?: string }, mode: Mode) {
     if (!currentPosition) {
       return;
     }
 
-    setSegments((prev) => [...prev, { mode: activeMode, from: currentPosition, to }]);
+    setSegments((prev) => [...prev, { mode, from: currentPosition, to }]);
+    setForcedWalkAtNodeId(null);
+    setInteractionMessage(null);
   }
 
-  function onNodeClick(node: NodeDTO) {
+  function onNodeClick(node: NodeDTO, nextSubwayLine?: string) {
     if (!currentPosition) {
       return;
     }
 
     setKnownNodes((prev) => ({ ...prev, [node.id]: node }));
 
-    if (activeMode === "WALK") {
-      appendSegment({ lat: node.lat, lng: node.lng, nodeId: node.id });
+    if (contextMode === "WALK") {
+      const walkDistance = haversineMeters(currentPosition.lat, currentPosition.lng, node.lat, node.lng);
+      if (walkDistance > walkRadiusMeters) {
+        setInteractionMessage(`Outside ${WALK_MINUTES}-minute walk range.`);
+        return;
+      }
+
+      appendSegment({ lat: node.lat, lng: node.lng, nodeId: node.id }, "WALK");
       return;
     }
 
-    if (!currentNode) {
+    if (!currentNode || currentNode.type !== "SUBWAY_STATION") {
+      setInteractionMessage("Subway mode requires being at a subway station.");
       return;
     }
 
-    const requiredType = MODE_TO_NODE_TYPE[activeMode];
-    if (currentNode.type !== requiredType || node.type !== requiredType || node.id === currentNode.id) {
+    if (node.type !== "SUBWAY_STATION") {
+      setInteractionMessage("Only connected subway stations are available in subway mode.");
       return;
     }
 
-    appendSegment({ lat: node.lat, lng: node.lng, nodeId: node.id });
+    if (node.id === currentNode.id) {
+      setInteractionMessage("Pick a different station.");
+      return;
+    }
+
+    appendSegment({ lat: node.lat, lng: node.lng, nodeId: node.id }, "SUBWAY");
+    setActiveSubwayLine(nextSubwayLine ?? null);
   }
 
   function onDestinationClick() {
-    if (!challenge || activeMode !== "WALK") {
+    if (!challenge || contextMode !== "WALK") {
       return;
     }
 
-    appendSegment({ lat: challenge.destLat, lng: challenge.destLng });
+    appendSegment({ lat: challenge.destLat, lng: challenge.destLng }, "WALK");
   }
 
   async function loadLeaderboard() {
@@ -346,7 +374,7 @@ export default function TodayChallengePage() {
     return <main className={styles.state}>No challenge available.</main>;
   }
 
-  const nextHint = guidance(activeMode, modeDisabledReasons, canSubmit);
+  const nextHint = interactionMessage ?? guidance(contextMode, canSubmit);
   const remainingMeters = Number.isFinite(destinationDistanceMeters) ? Math.max(destinationDistanceMeters, 0) : 0;
 
   return (
@@ -359,7 +387,8 @@ export default function TodayChallengePage() {
           </div>
           <div className={styles.hudStats}>
             <span>{segments.length} steps</span>
-            <span>{compactModeLabel(activeMode)}</span>
+            <span>{contextMode === "SUBWAY" ? "Subway" : "Walk"}</span>
+            {contextMode === "SUBWAY" && activeSubwayLine ? <span>Line {activeSubwayLine}</span> : null}
             <span className={canSubmit ? styles.statReady : styles.statRemaining}>{canSubmit ? "Route ready" : `${remainingMeters.toFixed(0)}m remaining`}</span>
           </div>
           <div className={styles.progressTrack} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progressPercent)}>
@@ -371,34 +400,39 @@ export default function TodayChallengePage() {
         <div className={styles.mapWrap}>
           <ChallengeMap
             challenge={challenge}
-            nodes={visibleNodes}
+            nodes={mapNodes}
             segments={segments}
-            selectedMode={activeMode}
+            contextMode={contextMode}
+            walkNodeFilter={walkNodeFilter}
+            activeSubwayLine={activeSubwayLine}
             currentPosition={currentPosition}
             currentNodeId={currentNode?.id}
             onNodeClick={onNodeClick}
             onDestinationClick={onDestinationClick}
-            onViewportChange={setViewportBounds}
+            walkRadiusMeters={walkRadiusMeters}
+            bikeRadiusMeters={bikeRadiusMeters}
+            onInteractionMessage={setInteractionMessage}
+            onViewportChange={handleViewportChange}
+            onBaseTileReady={markFirstBaseTile}
           />
         </div>
 
         <div className={styles.modeDock}>
-          {MODES.map((mode) => {
-            const reason = modeDisabledReasons[mode];
-            const disabled = Boolean(reason);
-            return (
-              <button
-                key={mode}
-                type="button"
-                className={mode === activeMode ? styles.modeActive : styles.modeButton}
-                disabled={disabled}
-                title={reason}
-                onClick={() => setSelectedMode(mode)}
-              >
-                {modeLabel(mode)}
-              </button>
-            );
-          })}
+          {contextMode === "SUBWAY" ? (
+            <button
+              type="button"
+              className={styles.modeButton}
+              onClick={() => {
+                if (currentNode?.id) {
+                  setForcedWalkAtNodeId(currentNode.id);
+                  setActiveSubwayLine(null);
+                  setInteractionMessage("Walk mode restored from current subway station.");
+                }
+              }}
+            >
+              Exit to Walk
+            </button>
+          ) : null}
           <button type="button" className={styles.undoButton} disabled={segments.length === 0} onClick={() => setSegments((prev) => prev.slice(0, -1))}>
             UNDO
           </button>
@@ -433,6 +467,29 @@ export default function TodayChallengePage() {
               <p className={styles.cardValue}>{formatPosition(currentNode)}</p>
             </div>
 
+            {contextMode === "WALK" ? (
+              <div className={styles.card}>
+                <p className={styles.cardLabel}>Range Filters</p>
+                <div className={styles.filterRow}>
+                  {(Object.keys(walkNodeFilter) as NodeDTO["type"][]).map((type) => (
+                    <label key={type} className={styles.filterToggle}>
+                      <input
+                        type="checkbox"
+                        checked={walkNodeFilter[type]}
+                        onChange={(event) => {
+                          setWalkNodeFilter((prev) => ({
+                            ...prev,
+                            [type]: event.target.checked,
+                          }));
+                        }}
+                      />
+                      <span>{NODE_TYPE_LABELS[type]} ({walkReachableCounts[type]})</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             <label className={styles.inputGroup} htmlFor="playerName">
               <span>Player Name</span>
               <input
@@ -457,9 +514,7 @@ export default function TodayChallengePage() {
               {segments.map((segment, index) => (
                 <li key={`${segment.mode}-${index}`}>
                   <strong>{modeLabel(segment.mode)}</strong>
-                  <span>
-                    ({segment.from.lat.toFixed(4)}, {segment.from.lng.toFixed(4)}) to ({segment.to.lat.toFixed(4)}, {segment.to.lng.toFixed(4)})
-                  </span>
+                  <span>{coordinateLabel(segment.from, challenge, knownNodes)} to {coordinateLabel(segment.to, challenge, knownNodes)}</span>
                 </li>
               ))}
             </ol>
@@ -482,10 +537,11 @@ export default function TodayChallengePage() {
         {panelExpanded && activeTab === "rules" ? (
           <div className={styles.panelBody}>
             <ul className={styles.ruleList}>
-              <li>Start at origin. Only WALK is available first.</li>
-              <li>Transit modes require matching node type at current position.</li>
-              <li>BIKE_SHARE, SUBWAY, BUS, and FERRY are node-to-node only.</li>
-              <li>WALK can move to any node or destination B.</li>
+              <li>Start at origin. You can always walk to any node within 15-minute range.</li>
+              <li>Walk to any reachable subway station to enter subway action mode.</li>
+              <li>In subway mode, only stations on connected lines are shown and clickable.</li>
+              <li>Use Exit to Walk to leave subway mode from your current station.</li>
+              <li>WALK can move to nodes or destination B inside the 15-minute walk range.</li>
               <li>No time hints during planning. Score appears after submit.</li>
               <li>Finish within 50 meters of destination.</li>
             </ul>
