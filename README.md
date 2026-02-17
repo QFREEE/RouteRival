@@ -115,3 +115,10 @@ npm run ui:screenshot
 ```
 
 Output file: `artifacts/challenge-today.png`
+
+## ChatGPT PR Review Action
+
+- Workflow file: `.github/workflows/chatgpt-review.yml`
+- Trigger: pull requests on `opened`, `synchronize`, `reopened`, `ready_for_review`
+- Required secret: add repository secret `openai_api_key`
+- Needed repo setting: ensure Actions has permission to write pull request comments
