@@ -23,6 +23,11 @@ npm run seed:challenge -- --city=NYC --dateKey=2026-02-16 --title="Title" \
 
 # UI testing
 npm run ui:screenshot    # Playwright screenshot → artifacts/challenge-today.png
+
+# Optional MCP verification (OpenCode + Chrome DevTools MCP)
+# Ensure `chrome-devtools` MCP server is configured in `opencode.json`
+# and connected (`opencode mcp list`) before using it to inspect
+# http://localhost:3000/challenge/today interactively.
 ```
 
 ## Architecture

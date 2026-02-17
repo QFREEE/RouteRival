@@ -4,9 +4,9 @@ import { prisma } from "@/lib/prisma";
 
 export async function GET(request: Request) {
   const dateKey = toDateKey();
-  const includeNodes = new URL(request.url).searchParams.get("includeNodes") === "true";
+  void request;
 
-  const challenge = await prisma.challenge.findFirst({
+  let challenge = await prisma.challenge.findFirst({
     where: {
       dateKey,
       city: {
@@ -16,11 +16,20 @@ export async function GET(request: Request) {
   });
 
   if (!challenge) {
-    return NextResponse.json({ error: "No challenge found for today." }, { status: 404 });
+    challenge = await prisma.challenge.findFirst({
+      where: {
+        city: {
+          name: "NYC",
+        },
+      },
+      orderBy: {
+        dateKey: "desc",
+      },
+    });
   }
 
-  if (!includeNodes) {
-    return NextResponse.json({ challenge });
+  if (!challenge) {
+    return NextResponse.json({ error: "No challenge found for today." }, { status: 404 });
   }
 
   const nodes = await prisma.node.findMany({

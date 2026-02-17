@@ -239,6 +239,24 @@
   font-weight: 650;
 }
 
+.filterRow {
+  margin-top: 0.35rem;
+  display: grid;
+  gap: 0.38rem;
+}
+
+.filterToggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #334155;
+  font-size: 0.82rem;
+}
+
+.filterToggle input {
+  accent-color: #2563eb;
+}
+
 .rank {
   margin-top: 0.2rem;
   color: #2563eb;

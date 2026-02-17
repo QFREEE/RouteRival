@@ -32,6 +32,35 @@ Open `http://localhost:3000` and play at `http://localhost:3000/challenge/today`
 - `POST /api/admin/challenge` (local only)
   - Protected by `x-admin-key` and disabled in production.
 
+## Optional Separate Backend (Different Port)
+
+- Start simple backend service on port `4001`:
+
+```bash
+npm run dev:api
+```
+
+- In development, frontend `/api/*` requests now default to `http://localhost:4001` unless `BACKEND_ORIGIN` is set.
+
+- Point Next.js frontend `/api/*` calls to that backend:
+
+```bash
+BACKEND_ORIGIN=http://localhost:4001 npm run dev
+```
+
+- Start backend + frontend together:
+
+```bash
+npm run dev:full
+```
+
+- Change backend port if needed:
+
+```bash
+BACKEND_PORT=4010 npm run dev:api
+BACKEND_ORIGIN=http://localhost:4010 npm run dev
+```
+
 ## Database and Seeding
 
 - Schema: `prisma/schema.prisma`
