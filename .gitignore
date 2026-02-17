@@ -46,3 +46,7 @@ next-env.d.ts
 
 # git worktrees
 .worktrees/
+
+# local UI artifacts
+artifacts/action-path/
+artifacts/challenge-today-*.png
